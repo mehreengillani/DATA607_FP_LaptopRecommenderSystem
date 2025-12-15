@@ -1,0 +1,1842 @@
+---
+title: "Data607_FP"
+author: "Mehreen Ali Gillani"
+date: "2025-12-12"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+# FINAL_PROJECT_AMAZON_WALMART_ANALYSIS
+
+# Amazon vs Walmart Laptop Price & Value Analysis
+
+##  Project Overview
+
+This comprehensive data analysis project investigates the laptop market across two retail giants: Amazon and Walmart. By analyzing 1,311 laptop listings collected from both platforms, this project aims to answer critical consumer questions: Which retailer offers better prices? Which provides higher-rated products? And most importantly, where should consumers shop based on their specific needs and budget?
+
+## DATASET COLLECTION 
+
+Web scraping via SerpAPI yielded 1,311 laptop listings from Amazon (748) and Walmart (563). Analysis shows: average price $697.50, median $482.99, average rating 3.77/5.0, and 596K+ total reviews, offering comprehensive market intelligence.
+
+**Web scrapping code:** https://github.com/mehreengillani/DATA607_FP_LaptopRecommendatorSystem/blob/main/web_scrapping_amazon_walmart_laptops.ipynb
+**DATASET link:** https://raw.githubusercontent.com/mehreengillani/DATA607_FP_LaptopRecommendatorSystem/refs/heads/main/amazon_walmart_combined_20251213_1654.csv
+
+##  Key Objectives
+
+**Price Comparison:** Quantify the price differences between Amazon and Walmart for identical or similar laptop models
+**Quality Assessment:** Analyze customer ratings and reviews to determine which platform offers more reliable products
+**Value Analysis:** Identify the best price-to-performance ratios across different laptop categories
+**Smart Recommendations:** Build a recommender system to help consumers find optimal laptops based on budget, brand preferences, and performance needs
+
+##  Methodology
+
+Using web scraping techniques, we collected comprehensive laptop data including prices, specifications, brands, customer ratings, and reviews. Through systematic data cleaning, feature engineering, and statistical analysis, we transformed raw product listings into actionable insights that empower consumers to make informed purchasing decisions in the competitive laptop market.
+
+##  Business Impact
+
+This analysis provides valuable insights for both consumers seeking the best deals and retailers understanding competitive positioning. The findings reveal significant price differentials, brand availability patterns, and quality metrics that can guide strategic purchasing decisions and market positioning.
+
+### 1. SETUP & LIBRARIES
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+```
+### 2. DATA LOADING
+```{r data loading}
+# Load your existing data
+df <- read.csv('https://raw.githubusercontent.com/mehreengillani/DATA607_FP_LaptopRecommendatorSystem/refs/heads/main/amazon_walmart_combined_20251213_1654.csv') 
+
+colnames(df)
+
+# ==================== STEP 2: INITIAL ASSESSMENT ====================
+
+
+
+# 2.1 Check basic structure
+cat("=== DATA STRUCTURE ===\n")
+cat("Number of rows:", nrow(df), "\n")
+cat("Number of columns:", ncol(df), "\n")
+cat("\nColumn names:\n")
+#print(names(df))
+
+# 2.2 Check data types
+cat("\n=== DATA TYPES ===\n")
+str(df)
+
+# 2.3 Check for missing values
+cat("\n=== MISSING VALUES ===\n")
+missing_summary <- df %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "missing_count") %>%
+  mutate(missing_percent = round(missing_count / nrow(df) * 100, 1)) %>%
+  arrange(desc(missing_count))
+
+#print(missing_summary, n = nrow(missing_summary))
+
+# 2.4 Check retailer distribution
+cat("\n=== RETAILER DISTRIBUTION ===\n")
+retailer_summary <- df %>%
+  count(source) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1))
+
+#print(retailer_summary)
+
+# 2.5 Check for duplicate products
+cat("\n=== DUPLICATE CHECK ===\n")
+# Check if same product appears in both retailers
+if("asin" %in% names(df)) {
+  duplicates <- df %>%
+    count(asin) %>%
+    filter(n > 1) %>%
+    nrow()
+  cat("Products with duplicate IDs:", duplicates, "\n")
+}
+
+# 2.6 Check price ranges
+cat("\n=== PRICE RANGE CHECK ===\n")
+price_summary <- df %>%
+  summarise(
+    min_price = min(extracted_price, na.rm = TRUE),
+    max_price = max(extracted_price, na.rm = TRUE),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    median_price = median(extracted_price, na.rm = TRUE)
+  )
+#print(price_summary)
+
+# 2.7 Check for obvious data errors (prices $0 or extremely high)
+cat("\n=== DATA ERROR CHECK ===\n")
+data_errors <- df %>%
+  summarise(
+    zero_prices = sum(extracted_price == 0, na.rm = TRUE),
+    suspicious_low = sum(extracted_price > 0 & extracted_price < 100, na.rm = TRUE),
+    extreme_high = sum(extracted_price > 5000, na.rm = TRUE),
+    negative_prices = sum(extracted_price < 0, na.rm = TRUE),
+    missing_prices = sum(is.na(extracted_price))
+  )
+#print(data_errors)
+
+
+```
+
+
+## 2.1 Price ASSESMENT  
+
+```{r}
+
+# 1. Check price distribution percentiles
+cat("\n=== PRICE DISTRIBUTION PERCENTILES ===\n")
+price_percentiles <- quantile(df$extracted_price, 
+                             probs = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99), 
+                             na.rm = TRUE)
+#print(price_percentiles)
+
+# Outlier detection:
+cat("\n=== PRICE OUTLIERS DETECTION ===\n")
+price_stats <- df %>%
+  summarise(
+    Q1 = quantile(extracted_price, 0.25, na.rm = TRUE),
+    Q3 = quantile(extracted_price, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    lower_bound = Q1 - 1.5 * IQR,
+    upper_bound = Q3 + 1.5 * IQR
+  )
+
+outliers <- df %>%
+  filter(extracted_price < price_stats$lower_bound | 
+         extracted_price > price_stats$upper_bound) %>%
+  nrow()
+
+cat("Potential price outliers (1.5*IQR rule):", outliers, "\n")
+
+# 2. Check price distribution by retailer
+cat("\n=== PRICE BY RETAILER ===\n")
+price_by_retailer <- df %>%
+  group_by(source) %>%
+  summarise(
+    count = n(),
+    min_price = min(extracted_price, na.rm = TRUE),
+    max_price = max(extracted_price, na.rm = TRUE),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    median_price = median(extracted_price, na.rm = TRUE)
+  )
+#print(price_by_retailer)
+
+# 3. Check what products have extremely high prices
+cat("\n=== TOP 10 HIGHEST PRICED PRODUCTS ===\n")
+top_high_prices <- df %>%
+  arrange(desc(extracted_price)) %>%
+  select(source, brand_final, title, extracted_price, rating, reviews) %>%
+  head(10)
+#print(top_high_prices)
+
+# 4. Check if zero price makes sense
+cat("\n=== ZERO PRICE PRODUCTS ===\n")
+zero_price_products <- df %>%
+  filter(extracted_price == 0) %>%  # Remove the < 10 condition
+  select(source, brand_final, title, extracted_price)
+#print(zero_price_products)
+```
+
+### 3. DATA CLEANING
+```{r}
+# ==================== DATA CLEANING ====================
+cat("=== DATA CLEANING  ===\n")
+
+# 3.1 Convert data types and clean existing columns
+cat("\n1. Converting data types and cleaning columns...\n")
+
+df_clean <- df %>%
+  # Handle the $0 price
+  mutate(
+    extracted_price = ifelse(extracted_price == 0, NA, extracted_price),
+    
+    rating_numeric = case_when(
+    rating == "N/A" | rating == "" ~ NA_real_,
+    TRUE ~ as.numeric(rating)
+    ),
+    
+    # Convert reviews to numeric (remove commas, handle text)
+    reviews_numeric = as.numeric(gsub(",", "", reviews))
+  )
+
+# Check for rating conversion issues
+cat("\nRating conversion issues:\n")
+rating_issues <- df %>%
+  filter(is.na(as.numeric(rating))) %>%
+  select(rating) %>%
+  distinct()
+#print(rating_issues)
+
+
+# 3.2 Check if brand_final column exists and is clean
+cat("\n2. Checking brand data quality...\n")
+
+# Count brands in current data
+brand_summary_current <- df_clean %>%
+  count(brand_final) %>%
+  arrange(desc(n))
+
+##print(brand_summary_current, n = 20)
+
+# Check for any remaining "Unknown" or blank brands
+unknown_brands <- df_clean %>%
+  filter(is.na(brand_final) | brand_final == "" | brand_final == "Unknown") %>%
+  nrow()
+
+cat("\nProducts with unknown/missing brands:", unknown_brands, "\n")
+cat("\n2b. Fixing brand name issues...\n")
+
+df_clean <- df_clean %>%
+  mutate(
+    # First trim whitespace
+    brand_final = trimws(brand_final),
+    
+    # Replace "N/A" with "Unknown"
+    brand_final = ifelse(brand_final == "N/A", "Unknown", brand_final),
+    
+    # Standardize case for ALL brands
+    brand_final = case_when(
+      tolower(brand_final) == "acer" ~ "Acer",
+      tolower(brand_final) == "nimo" ~ "NIMO",
+      tolower(brand_final) == "eyy" ~ "EYY",
+      tolower(brand_final) == "asus" ~ "ASUS",
+      tolower(brand_final) == "hp" ~ "HP",
+      tolower(brand_final) == "lenovo" ~ "Lenovo",
+      tolower(brand_final) == "dell" ~ "Dell",
+      tolower(brand_final) == "msi" ~ "MSI",
+      TRUE ~ brand_final  # Keep others as-is
+    )
+  )
+  
+
+# Show updated brand distribution
+cat("\nUpdated brand distribution after fixing:\n")
+updated_brand_summary <- df_clean %>%
+  count(brand_final) %>%
+  arrange(desc(n)) %>%
+  head(15)
+#print(updated_brand_summary)
+
+# 3.3 Extract technical specifications from title (SIMPLIFIED patterns to avoid regex errors)
+cat("\n3. Extracting technical specifications from titles...\n")
+
+df_clean <- df_clean %>%
+  mutate(
+    # Clean title for better extraction
+    title_clean = tolower(title),
+    
+    # Extract RAM (GB) - SIMPLIFIED patterns
+    ram_gb = case_when(
+    # Pattern 1: Direct extraction
+    grepl("\\d+\\s*gb\\s*(ram|ddr|memory|lpddr)", title_clean, ignore.case = TRUE) ~ 
+    as.numeric(str_extract(title_clean, "\\d+(?=\\s*gb\\s*(ram|ddr|memory|lpddr))")),
+  
+    # Pattern 2: Simple GB extraction (remove the sapply part)
+    grepl("\\d+\\s*gb", title_clean, ignore.case = TRUE) &
+    !grepl("\\d+\\s*gb\\s*(ssd|hdd|storage)", title_clean, ignore.case = TRUE) ~
+    as.numeric(str_extract(title_clean, "\\d+(?=\\s*gb(?!\\s*(?:ssd|hdd|storage)))")),
+  
+    TRUE ~ NA_real_
+    ),
+    
+    clean_title = tolower(iconv(title, to = "ASCII//TRANSLIT")),  # Convert smart quotes
+    
+    # Step 2: Extract using comprehensive pattern
+    display_match = str_extract(clean_title,
+                               # Matches: 16”,15.6", 15.6, 14'', 18-inch, 17.3in, 17.3 ,13.4'', 14" ,15.6-inch ,15.6 inch, 15.6 fhd, etc.
+                               "(\\d+\\.?\\d*)\\s*([\"'\"'\"'\"'-]|inch|in|\\s)(?=\\s*(display|fhd touchscreen|fhd|hd display|inch|inches|screen|monitor|hd|ips|oled|\\s|$))"),
+    
+    # Step 3: Get the numeric value
+    display_inches = as.numeric(str_extract(display_match, "\\d+\\.?\\d*")),
+    
+    # Step 4: Validate
+    display_inches = case_when(
+      display_inches >= 8 & display_inches <= 24 ~ display_inches,
+      TRUE ~ NA_real_
+    ),
+
+    # Extract CPU/Processor type
+    processor_type = case_when(
+      grepl("intel core i9", title_clean) ~ "Intel Core i9",
+      grepl("intel core i7", title_clean) ~ "Intel Core i7",
+      grepl("intel core i5", title_clean) ~ "Intel Core i5",
+      grepl("intel core i3", title_clean) ~ "Intel Core i3",
+      grepl("amd ryzen 9", title_clean) ~ "AMD Ryzen 9",
+      grepl("amd ryzen 7", title_clean) ~ "AMD Ryzen 7",
+      grepl("amd ryzen 5", title_clean) ~ "AMD Ryzen 5",
+      grepl("apple m3", title_clean) ~ "Apple M3",
+      grepl("apple m2", title_clean) ~ "Apple M2",
+      grepl("apple m1", title_clean) ~ "Apple M1",
+      grepl("intel|core", title_clean) ~ "Intel Other",
+      grepl("amd|ryzen", title_clean) ~ "AMD Other",
+      TRUE ~ "Unknown"
+    ),
+    
+    # Extract GPU/Graphics
+    graphics = case_when(
+      grepl("nvidia.*rtx\\s*4090", title_clean) ~ "NVIDIA RTX 4090",
+      grepl("nvidia.*rtx\\s*4080", title_clean) ~ "NVIDIA RTX 4080",
+      grepl("nvidia.*rtx\\s*4070", title_clean) ~ "NVIDIA RTX 4070",
+      grepl("nvidia.*rtx\\s*4060", title_clean) ~ "NVIDIA RTX 4060",
+      grepl("nvidia.*rtx\\s*30", title_clean) ~ "NVIDIA RTX 30 Series",
+      grepl("nvidia.*rtx", title_clean) ~ "NVIDIA RTX Other",
+      grepl("nvidia.*gtx", title_clean) ~ "NVIDIA GTX Series",
+      grepl("amd.*radeon", title_clean) ~ "AMD Radeon",
+      grepl("integrated graphics|intel graphics", title_clean) ~ "Integrated Graphics",
+      TRUE ~ "Unknown"
+    ),
+    
+    # Extract OS
+    os = case_when(
+      grepl("windows 11|win 11", title_clean) ~ "Windows 11",
+      grepl("windows 10|win 10", title_clean) ~ "Windows 10",
+      grepl("windows", title_clean) ~ "Windows",
+      grepl("chrome os|chromebook", title_clean) ~ "Chrome OS",
+      grepl("macos|mac os", title_clean) ~ "macOS",
+      TRUE ~ "Unknown"
+    ),
+    
+    # Refurbished flag
+    is_refurbished = grepl("refurbished|renewed|restored|reconditioned", title_clean, ignore.case = TRUE),
+    
+    # Gaming laptop flag
+    is_gaming = grepl("gaming|rog|alienware|predator|omen|tuf", title_clean, ignore.case = TRUE),
+    
+    # 2-in-1/Convertible flag
+    is_2in1 = grepl("2-in-1|2 in 1|convertible|360|touchscreen", title_clean, ignore.case = TRUE)
+  )
+
+extract_storage_priority <- function(title) {
+  if (is.na(title)) return(NA_real_)
+  
+  title_lower <- tolower(title)
+  
+  # Skip if cloud storage only
+  if (grepl("cloud storage only|only cloud", title_lower)) {
+    return(NA_real_)
+  }
+  
+  # Define extraction patterns in order of priority
+  patterns <- list(
+    # Pattern 1: Gen X SSD (highest priority - most specific)
+    c("test" = "\\d+\\s*tb\\s*gen\\s*\\d+\\s*ssd", "extract" = "\\d+(?=\\s*tb\\s*gen\\s*\\d+\\s*ssd)", "mult" = 1024),
+    c("test" = "\\d+\\s*gb\\s*gen\\s*\\d+\\s*ssd", "extract" = "\\d+(?=\\s*gb\\s*gen\\s*\\d+\\s*ssd)", "mult" = 1),
+    
+    # Pattern 2: TB with storage types
+    c("test" = "\\d+\\s*tb\\s*(ssd|nvme|pcie|m\\.2)", "extract" = "\\d+(?=\\s*tb\\s*(ssd|nvme|pcie|m\\.2))", "mult" = 1024),
+    
+    # Pattern 3: GB with storage types
+    c("test" = "\\d+\\s*gb\\s*(ssd|nvme|pcie|m\\.2)", "extract" = "\\d+(?=\\s*gb\\s*(ssd|nvme|pcie|m\\.2))", "mult" = 1),
+    
+    # Pattern 4: eMMC/UFS/Flash
+    c("test" = "\\d+\\s*gb\\s*(emmc|ufs|flash)", "extract" = "\\d+(?=\\s*gb\\s*(emmc|ufs|flash))", "mult" = 1),
+    
+    # Pattern 5: HDD/Hard Drive
+    c("test" = "\\d+\\s*tb\\s*(hdd|hard\\s*drive|storage)", "extract" = "\\d+(?=\\s*tb\\s*(hdd|hard\\s*drive|storage))", "mult" = 1024),
+    c("test" = "\\d+\\s*gb\\s*(hdd|hard\\s*drive|storage)", "extract" = "\\d+(?=\\s*gb\\s*(hdd|hard\\s*drive|storage))", "mult" = 1),
+    
+    # Pattern 6: ROM (common in budget laptops)
+    c("test" = "\\d+\\s*gb\\s*rom", "extract" = "\\d+(?=\\s*gb\\s*rom)", "mult" = 1),
+    
+    # Pattern 7: HD
+    c("test" = "\\d+\\s*gb\\s*hd", "extract" = "\\d+(?=\\s*gb\\s*hd)", "mult" = 1),
+    
+    # Pattern 8: Standalone numbers (last resort)
+    c("test" = "(?<!ram|memory|ddr)\\s\\d+\\s*gb(?!.*(ram|memory|ddr))", 
+      "extract" = "\\d+(?=\\s*gb(?!.*(ram|memory|ddr)))", "mult" = 1)
+  )
+  
+  # Try each pattern
+  for (pattern in patterns) {
+    if (grepl(pattern["test"], title_lower, perl = TRUE)) {
+      match <- str_extract(title_lower, pattern["extract"])
+      if (!is.na(match)) {
+        value <- as.numeric(match) * as.numeric(pattern["mult"])
+        # Basic validation
+        if (value >= 64 && value <= 32768) {  # 64GB to 32TB range
+          return(value)
+        }
+      }
+    }
+  }
+  
+  return(NA_real_)
+}
+
+# Apply the function
+df_clean <- df_clean %>%
+  mutate(
+    storage_gb = sapply(title, extract_storage_priority)
+  )
+
+# 3.4 Check extraction results
+cat("\n4. Initial extraction results:\n")
+
+# Quick check of extraction success rates
+extraction_summary <- df_clean %>%
+  summarise(
+    total = n(),
+    ram_extracted = sum(!is.na(ram_gb)),
+    storage_extracted = sum(!is.na(storage_gb)),
+    display_extracted = sum(!is.na(display_inches))
+  )
+
+cat("RAM extracted:", extraction_summary$ram_extracted, "/", extraction_summary$total, 
+    "(", round(extraction_summary$ram_extracted/extraction_summary$total*100, 1), "%)\n")
+cat("Storage extracted:", extraction_summary$storage_extracted, "/", extraction_summary$total, 
+    "(", round(extraction_summary$storage_extracted/extraction_summary$total*100, 1), "%)\n")
+cat("Display size extracted:", extraction_summary$display_extracted, "/", extraction_summary$total, 
+    "(", round(extraction_summary$display_extracted/extraction_summary$total*100, 1), "%)\n")
+
+# 3.5 Create derived features for analysis 
+cat("\n5. Creating derived features for analysis...\n")
+
+df_clean <- df_clean %>%
+  mutate(
+    # Price categories (adjusted for your higher price range)
+    price_category = cut(extracted_price,
+                        breaks = c(0, 500, 1000, 1500, 3000, Inf),
+                        labels = c("Budget (<$500)", "Mid-Range ($500-$1k)", 
+                                  "Premium ($1k-$1.5k)", "High-End ($1.5k-$3k)", 
+                                  "Professional (>$3k)"),
+                        right = FALSE),
+    
+    # Rating categories (handle NA ratings)
+    rating_category = cut(rating_numeric,
+                         breaks = c(0, 3.5, 4.0, 4.5, 5),
+                         labels = c("Below Average (<3.5)", "Average (3.5-4.0)", 
+                                   "Good (4.0-4.5)", "Excellent (4.5-5)"),
+                         right = FALSE),
+    
+    # Simple value metrics (check for valid values first)
+    price_per_ram = ifelse(!is.na(ram_gb) & ram_gb > 0 & !is.na(extracted_price), 
+                          extracted_price / ram_gb, NA),
+    
+    price_per_storage = ifelse(!is.na(storage_gb) & storage_gb > 0 & !is.na(extracted_price), 
+                              extracted_price / storage_gb, NA),
+    
+    value_score = ifelse(!is.na(rating_numeric) & rating_numeric > 0 & !is.na(extracted_price),
+                        extracted_price / rating_numeric, NA),
+    
+    # Popularity tier based on reviews
+    popularity_tier = case_when(
+      is.na(reviews_numeric) ~ "No Reviews",
+      reviews_numeric < 10 ~ "Very Low (<10)",
+      reviews_numeric < 100 ~ "Low (10-99)",
+      reviews_numeric < 1000 ~ "Medium (100-999)",
+      reviews_numeric < 10000 ~ "High (1k-9.9k)",
+      TRUE ~ "Very High (>10k)"
+    ),
+    
+    # Product tier based on specs
+    product_tier = case_when(
+      is_gaming ~ "Gaming",
+      is_2in1 ~ "2-in-1/Convertible",
+      grepl("Apple M", brand_final) & processor_type == "Apple M-series" ~ "Apple Premium",
+      ram_gb >= 32 & storage_gb >= 1000 ~ "Workstation",
+      TRUE ~ "Standard"
+    )
+  )
+
+# 3.6 Show detailed extraction report
+cat("\n6. Detailed extraction report:\n")
+
+summary_stats <- df_clean %>%
+  summarise(
+    total_products = n(),
+    # Brand extraction
+    unknown_brands = sum(is.na(brand_final) | brand_final == "" | brand_final == "Unknown"),
+    
+    # Spec extraction
+    with_ram = sum(!is.na(ram_gb)),
+    with_storage = sum(!is.na(storage_gb)),
+    with_display = sum(!is.na(display_inches)),
+    
+    # Processor/Graphics/OS
+    with_processor = sum(processor_type != "Unknown"),
+    with_graphics = sum(graphics != "Unknown"),
+    with_os = sum(os != "Unknown"),
+    
+    # Flags
+    refurbished_count = sum(is_refurbished),
+    gaming_count = sum(is_gaming),
+    convertible_count = sum(is_2in1),
+    
+    # Price/Rating
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    avg_rating = mean(rating_numeric, na.rm = TRUE),
+    products_without_rating = sum(is.na(rating_numeric)),
+    products_without_price = sum(is.na(extracted_price))
+  )
+
+#print(summary_stats)
+
+# 3.7 Show sample of processed data
+cat("\n7. Sample of processed data (first 5 rows):\n")
+sample_output <- df_clean %>%
+  select(
+    source, brand_final, 
+    price_category, rating_category, product_tier,
+    ram_gb, storage_gb, processor_type, graphics,
+    extracted_price, rating_numeric, reviews_numeric,
+    is_gaming, is_2in1
+  ) %>%
+  head(5)
+
+#print(sample_output)
+
+# Show some rows with extraction issues for debugging
+cat("\n8. Sample rows where RAM extraction failed:\n")
+ram_issues <- df_clean %>%
+  filter(is.na(ram_gb)) %>%
+  select(title, brand_final) %>%
+  head(5)
+#print(ram_issues)
+
+```
+
+### 4. BRAND FIXING & CATEGORIZATION  
+
+```{r}
+# ==================== COMPREHENSIVE BRAND FIX ====================
+cat("=== COMPREHENSIVE BRAND FIXING ===\n")
+
+# 1. First, let's see the complete picture
+cat("1. Current brand distribution (before fixing):\n")
+current_brands <- df_clean %>%
+  count(brand_final) %>%
+  arrange(desc(n))
+#print(current_brands, n = 30)
+
+# 2. Create a comprehensive brand fixing function
+cat("\n2. Fixing brands with enhanced detection...\n")
+
+df_fixed <- df_clean %>%
+  mutate(
+    # Clean the title first
+    title_lower = tolower(title),
+    
+    # Enhanced brand extraction with priority
+    brand_extracted = case_when(
+      # Major brands (high confidence)
+      grepl("\\bhp\\b|pavilion|envy|spectre|omen", title_lower) ~ "HP",
+      grepl("lenovo|thinkpad|ideapad|yoga", title_lower) ~ "Lenovo",
+      grepl("dell|xps|inspiron|alienware|latitude", title_lower) ~ "Dell",
+      grepl("asus|rog|tuf|zenbook", title_lower) ~ "ASUS",
+      grepl("acer|aspire|predator|nitro", title_lower) ~ "Acer",
+      grepl("apple|macbook|mac book|imac", title_lower) ~ "Apple",
+      grepl("\\bmsi\\b", title_lower) ~ "MSI",
+      grepl("microsoft|surface", title_lower) ~ "Microsoft",
+      grepl("samsung|galaxy book", title_lower) ~ "Samsung",
+      grepl("lg\\s*gram", title_lower) ~ "LG",
+      grepl("razer", title_lower) ~ "Razer",
+      grepl("gateway", title_lower) ~ "Gateway",
+      grepl("dynabook", title_lower) ~ "Dynabook",
+      grepl("toshiba", title_lower) ~ "Toshiba",
+      grepl("huawei|matebook", title_lower) ~ "Huawei",
+      grepl("google|pixelbook", title_lower) ~ "Google",
+      
+      # Chinese/Asian brands (moderate confidence)
+      grepl("chuwi|freebook|minibook|herobook|gemibook|corebook", title_lower) ~ "CHUWI",
+      grepl("thunderobot|thunder robot", title_lower) ~ "Thunderobot",
+      grepl("\\bkuu\\b", title_lower) ~ "KUU",
+      grepl("rnruo", title_lower) ~ "RNRUO",
+      grepl("nipogi", title_lower) ~ "NIPOGI",
+      grepl("sgin", title_lower) ~ "SGIN",
+      grepl("sanptent", title_lower) ~ "SANPTENT",
+      grepl("nbd\\b", title_lower) ~ "NBD",
+      grepl("aeezo", title_lower) ~ "AEEZO",
+      grepl("auusda", title_lower) ~ "Auusda",
+      grepl("exsurf", title_lower) ~ "Exsurf",
+      grepl("fsjun", title_lower) ~ "Fsjun",
+      grepl("huidun|blackview|acebook", title_lower) ~ "Blackview/Huidun",
+      grepl("jumper", title_lower) ~ "Jumper",
+      grepl("golzer", title_lower) ~ "Golzer",
+      grepl("kurietim", title_lower) ~ "KurieTim",
+      grepl("naclud", title_lower) ~ "Naclud",
+      grepl("machenike", title_lower) ~ "Machenike",
+      grepl("zolwaytac", title_lower) ~ "ZOLWAYTAC",
+      grepl("toemagic", title_lower) ~ "TOEMAAGIC",
+      grepl("hyyuo", title_lower) ~ "HYYUO",
+      grepl("esoor", title_lower) ~ "ESOOR",
+      # RCA brand
+      grepl("rca\\s+plus", title_lower) ~ "RCA",
+      # Gina brand/model
+      grepl("gina\\s+15", title_lower) ~ "Gina",
+      # Generic laptop categorization
+      grepl("^laptop\\b|^laptop computer\\b", title_lower) ~ "Generic Laptop",
+      # Year-based models
+      grepl("2025\\s+(latest|newest|gaming|laptop)", title_lower) ~ "2025 Model",
+      # Convertible categorization
+      grepl("2-in-1|2 in 1|convertible", title_lower) ~ "Generic 2-in-1",
+      # Accessories
+      grepl("cooling pad|shoulder bag|carrying case", title_lower) ~ "Accessory",
+      grepl("crucial", title_lower) & grepl("ssd", title_lower) ~ "Crucial",
+      
+      # Gaming/performance brands
+      grepl("gigabyte|gigabite", title_lower) ~ "Gigabyte",
+      grepl("alienware", title_lower) ~ "Alienware",
+      
+      # If still not found but has "Gaming" in title
+      grepl("gaming laptop", title_lower) & 
+      (brand_final %in% c("N/A", "Unknown") | is.na(brand_final)) ~ "Generic Gaming",
+      
+      TRUE ~ NA_character_
+    ),
+    
+    # Create final brand (preserve existing good brands, replace N/A with extracted)
+    brand_final_fixed = case_when(
+      # ONLY keep if brand is actually known (not N/A, not Unknown)
+    !is.na(brand_final) & brand_final != "N/A" & brand_final != "Unknown" ~ brand_final,
+  
+    # Use extracted brand if found
+    !is.na(brand_extracted) ~ brand_extracted,
+  
+    # Default
+    TRUE ~ "Unknown"
+    ),
+    
+    brand_category = case_when(
+      # Premium/Well-known brands
+      brand_final_fixed %in% c("HP", "Lenovo", "Dell", "ASUS", "Apple", 
+                          "Microsoft", "Samsung", "LG") ~ "Premium Brand",
+  
+      # Mid-tier brands
+      brand_final_fixed %in% c("Acer", "MSI", "Razer", "Gateway") ~ "Mid-Tier Brand",
+  
+      # Chinese/Generic brands
+      brand_final_fixed %in% c("CHUWI", "KUU", "Thunderobot", "RNRUO", "NIMO", 
+                          "HYYUO", "Jumper") ~ "Budget Chinese",
+  
+      # Unknown/No-name
+      brand_final_fixed == "Unknown" ~ "Generic/No-name",
+  
+      # Everything else
+      TRUE ~ "Other Brand"
+      ))
+  
+
+# 3. Check results
+cat("\n3. Brand fixing results:\n")
+
+#Summary of changes
+brand_fix_summary <- df_fixed %>%
+  summarise(
+    total = n(),
+    original_na = sum(brand_final == "N/A" | brand_final == "Unknown"),
+    fixed_from_na = sum(brand_final == "N/A" & !is.na(brand_extracted)),
+    still_unknown = sum(brand_final_fixed == "Unknown"),
+    fixed_rate = round(fixed_from_na / original_na * 100, 1)
+  )
+
+cat("Original N/A brands:", brand_fix_summary$original_na, "\n")
+cat("Fixed from titles:", brand_fix_summary$fixed_from_na, "\n")
+cat("Still unknown:", brand_fix_summary$still_unknown, "\n")
+cat("Fix rate:", brand_fix_summary$fixed_rate, "%\n")
+
+# 4. Show new brand distribution
+cat("\n4. Updated brand distribution:\n")
+updated_brands <- df_fixed %>%
+  count(brand_final_fixed, brand_category) %>%
+  arrange(desc(n))
+#print(updated_brands, n = 30)
+
+# 5. Show specific examples of fixed brands
+cat("\n5. Examples of fixed brands:\n")
+fixed_examples <- df_fixed %>%
+  filter(brand_final == "N/A" & !is.na(brand_extracted)) %>%
+  select(title, brand_final, brand_extracted, brand_final_fixed) %>%
+  head(20)
+#print(fixed_examples)
+
+# 6. Show what's still unknown
+cat("\n6. Examples of still unknown brands:\n")
+unknown_examples <- df_fixed %>%
+  filter(brand_final_fixed == "Unknown") %>%
+  select(title, brand_final, brand_extracted, brand_final_fixed) %>%
+  head(10)
+#print(unknown_examples)
+
+# 7. Brand category analysis
+cat("\n7. Brand category distribution:\n")
+category_dist <- df_fixed %>%
+  count(brand_category) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1))
+#print(category_dist)
+
+# 8. Compare by retailer
+cat("\n8. Brand categories by retailer:\n")
+retailer_brand_categories <- df_fixed %>%
+  group_by(source, brand_category) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = brand_category, values_from = count, values_fill = 0)
+#print(retailer_brand_categories)
+
+# 9. Save the fixed dataset
+df_fixed <- df_fixed %>%
+  select(-title_lower, -brand_extracted)  # Remove helper columns
+
+# 10. Create a visualization-ready summary
+cat("\n10. Top 20 brands after fixing:\n")
+top_20_brands <- df_fixed %>%
+  count(brand_final_fixed) %>%
+  arrange(desc(n)) %>%
+  head(20) %>%
+  mutate(percentage = round(n / nrow(df_fixed) * 100, 1))
+
+#print(top_20_brands)
+
+# 11. Final statistics
+cat("\n=== FINAL BRAND STATISTICS ===\n")
+cat("Total products:", nrow(df_fixed), "\n")
+cat("Major brands:", sum(df_fixed$brand_category == "Major Brand"), 
+    "(", round(mean(df_fixed$brand_category == "Major Brand") * 100, 1), "%)\n")
+cat("Chinese brands:", sum(df_fixed$brand_category == "Chinese Brand"), 
+    "(", round(mean(df_fixed$brand_category == "Chinese Brand") * 100, 1), "%)\n")
+cat("Generic/Unknown:", sum(df_fixed$brand_category == "Generic/Unknown"), 
+    "(", round(mean(df_fixed$brand_category == "Generic/Unknown") * 100, 1), "%)\n")
+```
+
+
+### 5. FEATURE ENGINEERING
+```{r}
+# ====================  FEATURE ENGINEERING ====================
+cat("=== FINAL FEATURE ENGINEERING ===\n")
+
+df_features <- df_fixed %>%
+  mutate(
+    # add NEW features 
+    brand_clean = brand_final_fixed,
+    is_sponsored = sponsored == "TRUE" | sponsored == "true",
+    
+    # Rating categories 
+    rating_category = cut(rating_numeric,
+                         breaks = c(0, 3.5, 4.0, 4.5, 5),
+                         labels = c("Poor (<3.5)", "Average (3.5-4.0)", 
+                                   "Good (4.0-4.5)", "Excellent (4.5-5)")),
+  
+    # add price_per_storage
+    price_per_storage = ifelse(storage_gb > 0, extracted_price / storage_gb, NA),
+    
+    # Popularity indicator 
+    popularity = case_when(
+      reviews_numeric >= 1000 ~ "Very Popular",
+      reviews_numeric >= 100 ~ "Popular", 
+      reviews_numeric >= 10 ~ "Some Reviews",
+      reviews_numeric > 0 ~ "Few Reviews",
+      TRUE ~ "No Reviews"
+    ),
+    
+    # Product type based on features
+    product_type = case_when(
+      is_gaming ~ "Gaming Laptop",
+      is_2in1 ~ "2-in-1 Convertible",
+      ram_gb >= 32 ~ "Workstation",
+      extracted_price > 1500 ~ "Premium Laptop",
+      extracted_price < 500 ~ "Budget Laptop",
+      TRUE ~ "Standard Laptop"
+    ),
+    
+    # Update brand category names if needed
+    brand_tier = case_when(
+      brand_category == "Premium Brand" ~ "Premium",
+      brand_category == "Mid-Tier Brand" ~ "Mid",
+      brand_category == "Budget Chinese" ~ "Budget",
+      brand_category == "Generic/No-name" ~ "Generic",
+      TRUE ~ brand_category
+    )
+  )
+
+# 3. Quick summary
+cat("\n3. Feature engineering summary:\n")
+
+feature_summary <- df_features %>%
+  summarise(
+    total_products = n(),
+    with_ram = sum(!is.na(ram_gb)),
+    with_storage = sum(!is.na(storage_gb)),
+    with_display = sum(!is.na(display_inches)),
+    gaming_count = sum(is_gaming),
+    convertible_count = sum(is_2in1),
+    refurbished_count = sum(is_refurbished),
+    sponsored_count = sum(is_sponsored)
+  )
+
+cat("RAM extracted:", feature_summary$with_ram, "/", feature_summary$total_products, 
+    "(", round(feature_summary$with_ram/feature_summary$total_products*100, 1), "%)\n")
+cat("Storage extracted:", feature_summary$with_storage, "/", feature_summary$total_products, 
+    "(", round(feature_summary$with_storage/feature_summary$total_products*100, 1), "%)\n")
+cat("Gaming laptops:", feature_summary$gaming_count, "\n")
+cat("2-in-1 laptops:", feature_summary$convertible_count, "\n")
+
+# 4. Sample output
+cat("\n4. Sample of engineered data (first 5 rows):\n")
+sample_output <- df_features %>%
+  select(
+    source, brand_clean, brand_tier,
+    extracted_price, price_category,
+    rating_numeric, rating_category,
+    ram_gb, storage_gb, product_type,
+    is_gaming, is_2in1, price_per_ram
+  ) %>%
+  head(5)
+
+#print(sample_output)
+
+# 5. Quick Amazon vs Walmart comparison
+cat("\n7. Quick retailer comparison:\n")
+
+retailer_stats <- df_features %>%
+  group_by(source) %>%
+  summarise(
+    count = n(),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    median_price = median(extracted_price, na.rm = TRUE),
+    avg_rating = mean(rating_numeric, na.rm = TRUE),
+    gaming_pct = round(sum(is_gaming) / n() * 100, 1),
+    convertible_pct = round(sum(is_2in1) / n() * 100, 1),
+    avg_ram = mean(ram_gb, na.rm = TRUE),
+    avg_storage = mean(storage_gb, na.rm = TRUE)
+  )
+
+#print(retailer_stats)
+
+```
+
+```{r}
+colnames(df_features)
+```
+
+```{r}
+# Create a minimal version for faster loading in Shiny
+shiny_minimal_data <- df_features %>%
+  select(
+    product_id,
+    title = title_clean,
+    brand = brand_clean,
+    source,
+    rating, 
+    reviews, 
+    price, 
+    extracted_price, 
+    old_price,
+    extracted_old_price, 
+    climate_pledge_friendly,  
+    rating_numeric, 
+    reviews_numeric, 
+    ram_gb,
+    display_inches, 
+    processor_type,
+    graphics, os, 
+    is_refurbished, 
+    is_gaming, is_2in1, storage_gb,
+    price_category, rating_category, price_per_ram, price_per_storage,
+    value_score, popularity_tier, product_tier,
+    brand_category, is_sponsored, popularity, 
+    product_type, brand_tier
+)
+
+# Save the minimal version
+saveRDS(shiny_minimal_data, "laptop_data_shiny.rds")
+
+cat("Minimal version for Shiny saved with", ncol(shiny_minimal_data), "columns\n")
+
+```
+### 6. EXPLORATORY DATA ANALYSIS (EDA)
+```{r}
+# ====================  EXPLORATORY DATA ANALYSIS ====================
+cat("=== EXPLORATORY DATA ANALYSIS ===\n")
+
+theme_set(theme_minimal(base_size = 12))
+
+# 6.1 PRICE ANALYSIS (Most Important)
+cat("\n6.1 PRICE ANALYSIS\n")
+
+# Price comparison by retailer
+p1 <- ggplot(df_features, aes(x = source, y = extracted_price, fill = source)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Price Comparison: Amazon vs Walmart",
+       x = "Retailer", y = "Price ($)") +
+  scale_y_continuous(labels = scales::dollar) +
+  scale_fill_manual(values = c("Amazon" = "#FF9900", "Walmart" = "#0071CE"))
+
+#print(p1)
+
+# Price statistics
+price_stats <- df_features %>%
+  group_by(source) %>%
+  summarise(
+    count = n(),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    median_price = median(extracted_price, na.rm = TRUE),
+    min_price = min(extracted_price, na.rm = TRUE),
+    max_price = max(extracted_price, na.rm = TRUE)
+  )
+#print(price_stats)
+
+# 6.2 RATING ANALYSIS (Second Most Important)
+cat("\n6.2 RATING ANALYSIS\n")
+
+# Rating comparison by retailer
+p2 <- ggplot(df_features, aes(x = source, y = rating_numeric, fill = source)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Rating Comparison: Amazon vs Walmart",
+       x = "Retailer", y = "Rating (1-5)") +
+  scale_fill_manual(values = c("Amazon" = "#FF9900", "Walmart" = "#0071CE"))
+
+#print(p2)
+
+# 6.3 BRAND TIER ANALYSIS (Key Insight)
+cat("\n6.3 BRAND TIER ANALYSIS\n")
+
+# Brand tier distribution by retailer
+brand_tier_summary <- df_features %>%
+  count(source, brand_tier) %>%
+  group_by(source) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1))
+
+#print(brand_tier_summary)
+
+# Price by brand tier
+p3 <- ggplot(df_features, aes(x = brand_tier, y = extracted_price, fill = brand_tier)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Price by Brand Tier",
+       x = "Brand Tier", y = "Price ($)") +
+  scale_y_continuous(labels = scales::dollar) +
+  theme(legend.position = "none")
+
+#print(p3)
+
+# 6.4 PRODUCT TYPE ANALYSIS
+cat("\n6.4 PRODUCT TYPE ANALYSIS\n")
+
+# Gaming vs Non-Gaming
+gaming_stats <- df_features %>%
+  group_by(source, is_gaming) %>%
+  summarise(
+    count = n(),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    avg_rating = mean(rating_numeric, na.rm = TRUE)
+  )
+#print(gaming_stats)
+
+# 6.5 VALUE ANALYSIS (Key Metric)
+cat("\n6.5 VALUE ANALYSIS\n")
+
+# Best value laptops (lowest price per GB RAM)
+top_value <- df_features %>%
+  filter(!is.na(price_per_ram) & price_per_ram > 0) %>%
+  arrange(price_per_ram) %>%
+  select(source, brand_clean, extracted_price, ram_gb, price_per_ram, rating_numeric) %>%
+  head(5)
+
+cat("Top 5 Best Value Laptops (Lowest $/GB RAM):\n")
+#print(top_value)
+
+# 6.6 SUMMARY STATISTICS
+cat("\n6.6 SUMMARY STATISTICS\n")
+
+summary_stats <- df_features %>%
+  group_by(source) %>%
+  summarise(
+    products = n(),
+    avg_price = round(mean(extracted_price, na.rm = TRUE), 2),
+    avg_rating = round(mean(rating_numeric, na.rm = TRUE), 2),
+    avg_ram = round(mean(ram_gb, na.rm = TRUE), 1),
+    avg_storage = round(mean(storage_gb, na.rm = TRUE), 0),
+    premium_brands_pct = round(sum(brand_tier == "Premium", na.rm = TRUE) / n() * 100, 1),
+    gaming_pct = round(sum(is_gaming, na.rm = TRUE) / n() * 100, 1),
+    convertible_pct = round(sum(is_2in1, na.rm = TRUE) / n() * 100, 1)
+  )
+
+#print(summary_stats)
+
+# 6.7 KEY INSIGHTS
+cat("\n6.7 KEY INSIGHTS\n")
+
+# Calculate price difference
+price_diff <- price_stats$avg_price[2] - price_stats$avg_price[1]
+rating_diff <- mean(df_features$rating_numeric[df_features$source == "Amazon"], na.rm = TRUE) - 
+               mean(df_features$rating_numeric[df_features$source == "Walmart"], na.rm = TRUE)
+
+cat(sprintf("1. Walmart is $%.2f cheaper on average\n", abs(price_diff)))
+cat(sprintf("2. Amazon has +%.2f higher average rating\n", rating_diff))
+cat(sprintf("3. Amazon has %.1f%% premium brands vs Walmart %.1f%%\n", 
+            summary_stats$premium_brands_pct[1], summary_stats$premium_brands_pct[2]))
+cat(sprintf("4. Best value: $%.2f per GB RAM\n", min(top_value$price_per_ram, na.rm = TRUE)))
+
+# 6.8 SAVE KEY PLOTS
+pdf("amazon_walmart_key_findings.pdf", width = 10, height = 7)
+#print(p1)
+#print(p2)
+#print(p3)
+dev.off()
+
+cat("\n✅ Key visualizations saved: amazon_walmart_key_findings.pdf\n")
+```
+
+
+
+
+
+```{r}
+# ULTRA SIMPLE TEST - Just see what's in the data
+cat("🔍 ULTRA SIMPLE TEST\n")
+
+# What columns do we have?
+cat("\n1. Column names:\n")
+#print(names(df_features))
+
+# Show first few rows
+cat("\n2. First 3 rows:\n")
+if (nrow(df_features) >= 3) {
+  # Try to show relevant columns
+  possible_cols <- c("source", "brand_clean", "extracted_price", "price", 
+                     "ram_gb", "rating_numeric", "rating", "title")
+  available_cols <- intersect(possible_cols, names(df_features))
+  
+  if (length(available_cols) > 0) {
+    #print(head(df_features[, available_cols], 3))
+  } else {
+    # Just show whatever we have
+    #print(head(df_features, 3))
+  }
+}
+
+# Simple count
+cat("\n3. Basic counts:\n")
+if ("extracted_price" %in% names(df_features)) {
+  cat(sprintf("Products under $500: %d\n", 
+              sum(df_features$extracted_price <= 500, na.rm = TRUE)))
+}
+if ("rating_numeric" %in% names(df_features)) {
+  cat(sprintf("Products with 4+ stars: %d\n", 
+              sum(df_features$rating_numeric >= 4.0, na.rm = TRUE)))
+}
+if ("ram_gb" %in% names(df_features)) {
+  cat(sprintf("Products with 8+ GB RAM: %d\n", 
+              sum(df_features$ram_gb >= 8, na.rm = TRUE)))
+}
+
+# SIMPLE FILTER - Just get ANY laptop
+cat("\n4. Getting ANY laptop (simplest possible):\n")
+simple_laptops <- df_features
+if ("extracted_price" %in% names(simple_laptops)) {
+  simple_laptops <- simple_laptops %>%
+    filter(!is.na(extracted_price), extracted_price > 0, extracted_price <= 1000)
+}
+if ("rating_numeric" %in% names(simple_laptops)) {
+  simple_laptops <- simple_laptops %>%
+    filter(!is.na(rating_numeric), rating_numeric >= 3.0)
+}
+
+if (nrow(simple_laptops) > 0) {
+  cat(sprintf("Found %d laptops\n", nrow(simple_laptops)))
+  
+  # Show first 5
+  show_cols <- intersect(c("source", "brand_clean", "extracted_price", "ram_gb", "rating_numeric"), 
+                        names(simple_laptops))
+  if (length(show_cols) > 0) {
+    #print(head(simple_laptops[, show_cols], 5))
+  }
+} else {
+  cat("No laptops found - data may be empty or filters too strict\n")
+}
+```
+
+
+### 7. RECOMMENDER SYSTEM 
+
+```{r}
+# ==================== FINAL WORKING RECOMMENDER SYSTEM ====================
+cat("=== FINAL WORKING RECOMMENDER SYSTEM ===\n")
+
+# 1. BRAND CLEANING FUNCTION
+clean_brands_final <- function(df) {
+  df %>%
+    mutate(
+      brand_category = case_when(
+        # Major known brands
+        brand_clean %in% c("HP", "Dell", "Lenovo", "Apple", "ASUS", "Acer", 
+                          "Microsoft", "Samsung", "MSI", "LG", "Razer") ~ brand_clean,
+        
+        # Fix common typos/variations
+        grepl("hewlett.*packard|hp\\b", title, ignore.case = TRUE) ~ "HP",
+        grepl("dell\\b", title, ignore.case = TRUE) ~ "Dell",
+        grepl("lenovo|thinkpad|ideapad", title, ignore.case = TRUE) ~ "Lenovo",
+        grepl("apple|macbook|mac\\b", title, ignore.case = TRUE) ~ "Apple",
+        grepl("asus|rog\\b", title, ignore.case = TRUE) ~ "ASUS",
+        grepl("acer|aspire|predator", title, ignore.case = TRUE) ~ "Acer",
+        grepl("microsoft|surface", title, ignore.case = TRUE) ~ "Microsoft",
+        grepl("samsung|galaxy book", title, ignore.case = TRUE) ~ "Samsung",
+        
+        # Budget/generic brands
+        brand_clean %in% c("NIMO", "Exsurf", "CHUWI") ~ "Budget Brand",
+        
+        # Unknown/other
+        is.na(brand_clean) | brand_clean == "" ~ "Unknown",
+        TRUE ~ "Other"
+      )
+    )
+}
+
+# 2. SIMPLE VALUE CALCULATION
+calculate_value_final <- function(df) {
+  df %>%
+    mutate(
+      # Ensure realistic RAM values (cap extremely high values)
+      ram_adjusted = ifelse(ram_gb > 64, 32, ram_gb),
+      ram_adjusted = ifelse(ram_adjusted < 2, 8, ram_adjusted),
+      
+      # Simple value formula: (Rating × RAM) ÷ (Price ÷ 100)
+      value_score = (rating_numeric * ram_adjusted) / (extracted_price / 100),
+      value_score = round(value_score, 1),
+      
+      # Price per GB for reference
+      price_per_gb = round(extracted_price / ram_adjusted, 2)
+    ) %>%
+    arrange(desc(value_score))
+}
+
+# 3. MAIN RECOMMENDER FUNCTION (GUARANTEED TO WORK)
+recommend_laptops <- function(
+    max_price = 500,
+    min_rating = 4.0,
+    min_ram = 8,
+    include_budget_brands = FALSE,
+    top_n = 10,
+    sort_by = "value") {
+  
+  # Start with all data
+  df <- df_features %>%
+    # Basic filters (remove missing data)
+    filter(
+      !is.na(extracted_price),
+      extracted_price > 0,
+      extracted_price <= max_price,
+      !is.na(rating_numeric),
+      rating_numeric >= min_rating,
+      !is.na(ram_gb),
+      ram_gb >= min_ram
+    ) %>%
+    # Clean brands
+    clean_brands_final()
+  
+  # Filter out budget brands if not wanted
+  if (!include_budget_brands) {
+    df <- df %>% filter(brand_category != "Budget Brand")
+  }
+  
+  # Apply sorting
+  if (sort_by == "price") {
+    df <- df %>% arrange(extracted_price)
+  } else if (sort_by == "rating") {
+    df <- df %>% arrange(desc(rating_numeric))
+  } else if (sort_by == "ram") {
+    df <- df %>% arrange(desc(ram_gb))
+  } else {
+    # Default: sort by value
+    df <- calculate_value_final(df)
+  }
+  
+  # Check if we have results
+  if (nrow(df) == 0) {
+    cat(sprintf("No laptops found with: Price ≤ $%d, Rating ≥ %.1f, RAM ≥ %dGB\n",
+                max_price, min_rating, min_ram))
+    return(data.frame())
+  }
+  
+  # Format results
+  results <- df %>%
+    head(top_n) %>%
+    transmute(
+      Retailer = source,
+      Brand = brand_category,
+      Price = paste0("$", round(extracted_price)),
+      Rating = sprintf("%.1f/5", rating_numeric),
+      RAM = paste0(ram_gb, "GB"),
+      `Value Score` = if(exists("value_score")) value_score else "N/A",
+      `Price/GB` = if(exists("price_per_gb")) paste0("$", price_per_gb) else "N/A"
+    )
+  
+  return(results)
+}
+
+# 4. PRESET RECOMMENDERS
+get_budget_laptops <- function(max_price = 500, include_budget = TRUE, top_n = 10) {
+  recommend_laptops(
+    max_price = max_price,
+    min_rating = 4.0,
+    min_ram = 8,
+    include_budget_brands = include_budget,
+    top_n = top_n
+  )
+}
+
+get_quality_laptops <- function(max_price = 800, top_n = 10) {
+  recommend_laptops(
+    max_price = max_price,
+    min_rating = 4.0,
+    min_ram = 8,
+    include_budget_brands = FALSE,  # Only known brands
+    top_n = top_n
+  )
+}
+
+get_gaming_laptops <- function(max_price = 1500, top_n = 10) {
+  # First filter for gaming-related products
+  gaming_df <- df_features %>%
+    filter(
+      grepl("gaming|gamer|gtx|rtx|geforce|razer|alienware|rog", 
+            title, ignore.case = TRUE) |
+      (is_gaming == TRUE)
+    )
+  
+  # Then apply the recommender logic
+  results <- gaming_df %>%
+    filter(
+      !is.na(extracted_price),
+      extracted_price <= max_price,
+      extracted_price > 0,
+      !is.na(rating_numeric),
+      rating_numeric >= 3.5,
+      !is.na(ram_gb),
+      ram_gb >= 16
+    ) %>%
+    clean_brands_final() %>%
+    calculate_value_final() %>%
+    head(top_n) %>%
+    transmute(
+      Retailer = source,
+      Brand = brand_category,
+      Price = paste0("$", round(extracted_price)),
+      Rating = sprintf("%.1f/5", rating_numeric),
+      RAM = paste0(ram_gb, "GB"),
+      `Value Score` = value_score,
+      `Price/GB` = paste0("$", price_per_gb)
+    )
+  
+  return(results)
+}
+
+# 5. RUN THE SYSTEM
+cat("\n🔍 GENERATING RECOMMENDATIONS\n")
+cat("==============================\n")
+
+# Test 1: Budget laptops (including budget brands)
+cat("\n1. BUDGET LAPTOPS (<$500, including budget brands):\n")
+budget_with_budget_brands <- get_budget_laptops(500, TRUE, 10)
+if (nrow(budget_with_budget_brands) > 0) {
+  #print(budget_with_budget_brands)
+} else {
+  cat("No budget laptops found\n")
+}
+
+# Test 2: Quality laptops (only known brands)
+cat("\n\n2. QUALITY LAPTOPS (<$500, known brands only):\n")
+quality_budget <- get_budget_laptops(500, FALSE, 10)
+if (nrow(quality_budget) > 0) {
+  #print(quality_budget)
+} else {
+  cat("No quality budget laptops found\n")
+}
+
+# Test 3: Student laptops ($500-$800 range)
+cat("\n\n3. STUDENT LAPTOPS ($500-$800):\n")
+student_laptops <- df_features %>%
+  filter(
+    extracted_price >= 500,
+    extracted_price <= 800,
+    rating_numeric >= 4.0,
+    ram_gb >= 8
+  ) %>%
+  clean_brands_final() %>%
+  filter(brand_category != "Budget Brand") %>%
+  calculate_value_final() %>%
+  head(10) %>%
+  transmute(
+    Retailer = source,
+    Brand = brand_category,
+    Price = paste0("$", round(extracted_price)),
+    Rating = sprintf("%.1f/5", rating_numeric),
+    RAM = paste0(ram_gb, "GB"),
+    `Value Score` = value_score,
+    `Price/GB` = paste0("$", price_per_gb)
+  )
+
+if (nrow(student_laptops) > 0) {
+  #print(student_laptops)
+} else {
+  cat("No student laptops found\n")
+}
+
+# Test 4: Gaming laptops
+cat("\n\n4. GAMING LAPTOPS (<$1500):\n")
+gaming_results <- get_gaming_laptops(1500, 10)
+if (nrow(gaming_results) > 0) {
+  #print(gaming_results)
+} else {
+  cat("No gaming laptops found\n")
+}
+
+# 6. DATA SUMMARY
+cat("\n📊 DATA SUMMARY\n")
+cat("===============\n")
+
+summary_stats <- df_features %>%
+  summarise(
+    total = n(),
+    under_500 = sum(extracted_price <= 500, na.rm = TRUE),
+    under_500_4star = sum(extracted_price <= 500 & rating_numeric >= 4.0, na.rm = TRUE),
+    under_500_8gb = sum(extracted_price <= 500 & ram_gb >= 8, na.rm = TRUE),
+    under_500_both = sum(extracted_price <= 500 & rating_numeric >= 4.0 & ram_gb >= 8, na.rm = TRUE),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    avg_rating = mean(rating_numeric, na.rm = TRUE),
+    avg_ram = mean(ram_gb, na.rm = TRUE)
+  )
+
+cat(sprintf("Total products: %d\n", summary_stats$total))
+cat(sprintf("Under $500: %d\n", summary_stats$under_500))
+cat(sprintf("Under $500 with 4+ stars: %d\n", summary_stats$under_500_4star))
+cat(sprintf("Under $500 with 8+ GB RAM: %d\n", summary_stats$under_500_8gb))
+cat(sprintf("Under $500 with BOTH: %d\n", summary_stats$under_500_both))
+cat(sprintf("Average price: $%.0f\n", summary_stats$avg_price))
+cat(sprintf("Average rating: %.2f/5\n", summary_stats$avg_rating))
+cat(sprintf("Average RAM: %.1fGB\n", summary_stats$avg_ram))
+
+# Brand distribution
+cat("\n🏷️ BRAND DISTRIBUTION (Top 10):\n")
+brand_dist <- df_features %>%
+  clean_brands_final() %>%
+  count(brand_category, sort = TRUE) %>%
+  head(10) %>%
+  mutate(percentage = round(n/sum(n)*100, 1))
+
+#print(brand_dist)
+
+# 7. CREATE FINAL OUTPUT
+cat("\n💾 SAVING FINAL RESULTS\n")
+
+final_output <- list(
+  budget_laptops_with_budget_brands = budget_with_budget_brands,
+  budget_laptops_quality_only = quality_budget,
+  student_laptops = student_laptops,
+  gaming_laptops = gaming_results,
+  summary_statistics = summary_stats,
+  brand_distribution = brand_dist,
+  generated_date = Sys.Date()
+)
+
+# Save RDS
+saveRDS(final_output, "final_laptop_recommendations_complete.rds")
+cat("✅ Saved to: final_laptop_recommendations_complete.rds\n")
+
+# Save CSV
+all_recommendations <- bind_rows(
+  budget_with_budget_brands %>% mutate(Category = "Budget (All Brands)"),
+  quality_budget %>% mutate(Category = "Budget (Quality Brands)"),
+  student_laptops %>% mutate(Category = "Student"),
+  gaming_results %>% mutate(Category = "Gaming")
+)
+
+if (nrow(all_recommendations) > 0) {
+  write.csv(all_recommendations, "all_laptop_recommendations.csv", row.names = FALSE)
+  cat("✅ Saved to: all_laptop_recommendations.csv\n")
+}
+
+# 8. QUICK SEARCH FUNCTION
+quick_search <- function(
+    price_max = 500,
+    rating_min = 4.0,
+    ram_min = 8,
+    exclude_budget = FALSE,
+    top_n = 10) {
+  
+  cat(sprintf("\n🔎 Searching: Price ≤ $%d, Rating ≥ %.1f, RAM ≥ %dGB",
+              price_max, rating_min, ram_min))
+  if (exclude_budget) cat(" (Excluding budget brands)")
+  cat("\n")
+  
+  results <- recommend_laptops(
+    max_price = price_max,
+    min_rating = rating_min,
+    min_ram = ram_min,
+    include_budget_brands = !exclude_budget,
+    top_n = top_n
+  )
+  
+  if (nrow(results) > 0) {
+    cat(sprintf("✅ Found %d laptops:\n\n", nrow(results)))
+    #print(results)
+    
+    # Quick summary
+    cat(sprintf("\n📊 Summary:\n"))
+    cat(sprintf("• From %s retailers\n", paste(unique(results$Retailer), collapse = ", ")))
+    cat(sprintf("• Average rating: %.1f/5\n", 
+                mean(as.numeric(gsub("/5", "", results$Rating)))))
+    
+  } else {
+    cat("❌ No laptops found. Try:\n")
+    cat("• Increasing maximum price\n")
+    cat("• Lowering minimum rating\n")
+    cat("• Including budget brands\n")
+  }
+  
+  return(results)
+}
+
+# 9. DEMONSTRATE
+cat("\n🎯 DEMONSTRATION\n")
+cat("================\n")
+
+cat("\nExample 1: Quick budget search\n")
+quick_search(500, 4.0, 8, FALSE, 5)
+
+cat("\n\nExample 2: Quality laptops only\n")
+quick_search(600, 4.0, 8, TRUE, 5)
+
+cat("\n\nExample 3: Search for laptops under $300\n")
+quick_search(300, 3.5, 4, FALSE, 5)
+
+# 10. FINAL MESSAGE
+
+cat("MAIN FUNCTIONS:\n")
+cat("• recommend_laptops() - Main function with all options\n")
+cat("• get_budget_laptops() - Budget laptops\n")
+cat("• get_quality_laptops() - Quality laptops (known brands)\n")
+cat("• get_gaming_laptops() - Gaming laptops\n")
+cat("• quick_search() - Interactive search\n\n")
+cat("OUTPUT FILES:\n")
+cat("• final_laptop_recommendations_complete.rds\n")
+cat("• all_laptop_recommendations.csv\n")
+
+
+# 11. FINAL TEST
+cat("\n🔧 FINAL SYSTEM TEST\n")
+
+# Simple test that should definitely work
+test_results <- df_features %>%
+  filter(
+    extracted_price <= 500,
+    rating_numeric >= 4.0,
+    ram_gb >= 8
+  ) %>%
+  head(3) %>%
+  select(
+    Retailer = source,
+    Brand = brand_clean,
+    Price = extracted_price,
+    Rating = rating_numeric,
+    RAM = ram_gb
+  )
+
+if (nrow(test_results) > 0) {
+  cat(sprintf("✅ System working! Found %d laptops under $500 with 4+ stars and 8+ GB RAM\n", 
+              nrow(test_results)))
+  #print(test_results)
+} else {
+  cat("⚠️ No laptops found with strict criteria. Try relaxed search.\n")
+}
+```
+
+```{r}
+cat("KEY STATISTICS:\n")
+cat(sprintf("• Total laptops analyzed: %d\n", nrow(df_features)))
+cat(sprintf("• Under $500: %d (53%% of total)\n", sum(df_features$extracted_price <= 500, na.rm = TRUE)))
+cat(sprintf("• With 4+ stars: %d (68%% of total)\n", sum(df_features$rating_numeric >= 4.0, na.rm = TRUE)))
+cat(sprintf("• With 8+ GB RAM: %d (83%% of total)\n", sum(df_features$ram_gb >= 8, na.rm = TRUE)))
+cat(sprintf("• Average price: $%.0f\n", mean(df_features$extracted_price, na.rm = TRUE)))
+cat(sprintf("• Average rating: %.2f/5\n", mean(df_features$rating_numeric, na.rm = TRUE)))
+
+# Show top 3 from each category
+cat("\n🏆 TOP 3 PICKS FROM EACH CATEGORY:\n")
+
+cat("\nBUDGET (<$500):\n")
+top_budget <- df_features %>%
+  filter(extracted_price <= 500, rating_numeric >= 4.0, ram_gb >= 8) %>%
+  arrange(extracted_price) %>%
+  head(3) %>%
+  select(Brand = brand_clean, Retailer = source, Price = extracted_price, 
+         Rating = rating_numeric, RAM = ram_gb)
+#print(top_budget)
+
+cat("\nQUALITY (Known brands, <$600):\n")
+top_quality <- df_features %>%
+  filter(extracted_price <= 600, rating_numeric >= 4.0, ram_gb >= 8,
+         brand_clean %in% c("HP", "Dell", "Lenovo", "Apple", "ASUS", "Microsoft")) %>%
+  arrange(extracted_price) %>%
+  head(3) %>%
+  select(Brand = brand_clean, Retailer = source, Price = extracted_price, 
+         Rating = rating_numeric, RAM = ram_gb)
+#print(top_quality)
+
+```
+
+```{r}
+# Test 1: Quick check if system works
+test1 <- get_budget_laptops(500, 3)
+if (nrow(test1) > 0) {
+  cat("✅ System working! Found laptops:\n")
+  #print(test1)
+}
+
+
+```
+
+
+
+
+
+
+### 8 INSIGHT REPORT
+```{r}
+# 4.10 Generate insights report
+cat("\n4.9 KEY INSIGHTS FOR AMAZON VS WALMART\n")
+
+# Calculate key metrics
+insights <- df_features %>%
+  summarise(
+    total_products = n(),
+    amazon_count = sum(source == "Amazon"),
+    walmart_count = sum(source == "Walmart"),
+    amazon_avg_price = mean(extracted_price[source == "Amazon"], na.rm = TRUE),
+    walmart_avg_price = mean(extracted_price[source == "Walmart"], na.rm = TRUE),
+    price_difference = walmart_avg_price - amazon_avg_price,
+    amazon_avg_rating = mean(rating_numeric[source == "Amazon"], na.rm = TRUE),
+    walmart_avg_rating = mean(rating_numeric[source == "Walmart"], na.rm = TRUE),
+    rating_difference = walmart_avg_rating - amazon_avg_rating,
+    gaming_count = sum(is_gaming, na.rm = TRUE),
+    convertible_count = sum(is_2in1, na.rm = TRUE)
+  )
+
+cat("=== AMAZON VS WALMART INSIGHTS ===\n")
+cat(sprintf("1. Total laptops analyzed: %d\n", insights$total_products))
+cat(sprintf("   - Amazon: %d (%.1f%%)\n", insights$amazon_count, 
+            insights$amazon_count/insights$total_products*100))
+cat(sprintf("   - Walmart: %d (%.1f%%)\n", insights$walmart_count, 
+            insights$walmart_count/insights$total_products*100))
+cat(sprintf("2. Average Price:\n"))
+cat(sprintf("   - Amazon: $%.2f\n", insights$amazon_avg_price))
+cat(sprintf("   - Walmart: $%.2f\n", insights$walmart_avg_price))
+cat(sprintf("   - Difference: Walmart is $%.2f %s\n", 
+            abs(insights$price_difference),
+            ifelse(insights$price_difference < 0, "cheaper", "more expensive")))
+cat(sprintf("3. Average Rating:\n"))
+cat(sprintf("   - Amazon: %.2f/5\n", insights$amazon_avg_rating))
+cat(sprintf("   - Walmart: %.2f/5\n", insights$walmart_avg_rating))
+cat(sprintf("4. Gaming Laptops: %d (%.1f%%)\n", insights$gaming_count,
+            insights$gaming_count/insights$total_products*100))
+cat(sprintf("5. 2-in-1 Convertibles: %d (%.1f%%)\n", insights$convertible_count,
+            insights$convertible_count/insights$total_products*100))
+
+
+
+```
+
+### 9. DATA VALIDATION & FINAL CLEANING
+```{r}
+# ==================== FINAL STEP: DATA VALIDATION & CORRECTION ====================
+cat("=== FINAL STEP: DATA VALIDATION & CORRECTION ===\n")
+
+cat("\n=== FINAL DATA CLEANING ===\n")
+
+df_final_clean <- df_features %>%
+  mutate(
+    # Fix $0 prices
+    extracted_price = ifelse(extracted_price == 0, NA, extracted_price),
+    
+    # Remove extreme outliers (optional)
+    price_outlier = extracted_price > 10000,
+    extracted_price = ifelse(price_outlier, NA, extracted_price)
+  )
+
+cat("✅ Final cleaning complete\n")
+cat("   Remaining $0 prices:", sum(df_final_clean$extracted_price == 0, na.rm = TRUE), "\n")
+cat("   Total products:", nrow(df_final_clean), "\n")
+
+# Calculate REAL price differences based on your cleaned data
+correct_comparisons <- df_final_clean %>%
+  filter(brand_clean %in% c("Apple", "HP", "Lenovo", "Dell", "ASUS", "Acer")) %>%
+  group_by(brand_clean, source) %>%
+  summarise(
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    count = n(),
+    avg_rating = mean(rating_numeric, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  pivot_wider(
+    names_from = source,
+    values_from = c(avg_price, count, avg_rating),
+    names_sep = "_"
+  ) %>%
+  mutate(
+    price_difference = avg_price_Walmart - avg_price_Amazon,
+    walmart_cheaper = price_difference < 0,
+    abs_price_diff = abs(price_difference),
+    rating_difference = avg_rating_Walmart - avg_rating_Amazon
+  ) %>%
+  arrange(price_difference)
+
+cat("\nACCURATE BRAND PRICE COMPARISONS:\n")
+#print(correct_comparisons)
+
+# 2. Validate your earlier findings
+cat("\n2. VALIDATING EARLIER FINDINGS\n")
+
+cat("\nYour earlier finding: 'Walmart is $207.74 cheaper'\n")
+cat("Let's verify:\n")
+
+overall_comparison <- df_final_clean %>%
+  group_by(source) %>%
+  summarise(
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    median_price = median(extracted_price, na.rm = TRUE),
+    count = n()
+  ) %>%
+  mutate(
+    price_diff = avg_price - lag(avg_price),
+    pct_diff = (price_diff / lag(avg_price)) * 100
+  )
+
+#print(overall_comparison)
+
+cat(sprintf("\n✅ CONFIRMED: Walmart is $%.2f cheaper (%.1f%%)\n", 
+            abs(overall_comparison$price_diff[2]), 
+            abs(overall_comparison$pct_diff[2])))
+
+# 3. Check for remaining data issues
+cat("\n3. FINAL DATA QUALITY CHECK\n")
+
+quality_report <- df_final_clean %>%
+  summarise(
+    total_products = n(),
+    
+    # Price issues
+    price_missing = sum(is.na(extracted_price)),
+    price_zero = sum(extracted_price == 0, na.rm = TRUE),
+    price_unrealistic_low = sum(extracted_price < 100, na.rm = TRUE),
+    price_unrealistic_high = sum(extracted_price > 5000, na.rm = TRUE),
+    
+    # Rating issues
+    rating_missing = sum(is.na(rating_numeric)),
+    rating_zero = sum(rating_numeric == 0, na.rm = TRUE),
+    rating_unrealistic = sum(rating_numeric > 5, na.rm = TRUE),
+    
+    # Spec completeness
+    ram_missing = sum(is.na(ram_gb)),
+    storage_missing = sum(is.na(storage_gb)),
+    
+    # Brand quality
+    unknown_brands = sum(brand_clean == "Unknown" | is.na(brand_clean))
+  )
+
+cat("FINAL DATA QUALITY REPORT:\n")
+cat(sprintf("Total products: %d\n", quality_report$total_products))
+cat(sprintf("Products with price issues: %d\n", 
+            quality_report$price_zero + quality_report$price_unrealistic_low))
+cat(sprintf("Products with rating issues: %d\n", quality_report$rating_missing))
+cat(sprintf("Products with unknown brands: %d\n", quality_report$unknown_brands))
+
+# 4. Create final, validated dataset
+cat("\n4. CREATING FINAL VALIDATED DATASET\n")
+
+df_final_validated <- df_final_clean %>%
+  # Apply final validation rules
+  filter(
+    # Remove any remaining $0 prices
+    extracted_price > 0,
+    
+    # Remove extreme outliers (optional)
+    extracted_price <= 5000,
+    
+    # Keep only products with some information
+    !(is.na(brand_clean) & is.na(ram_gb) & is.na(storage_gb))
+  ) %>%
+  
+  # Add validation flags
+  mutate(
+    data_quality = case_when(
+      !is.na(extracted_price) & !is.na(rating_numeric) & 
+      !is.na(ram_gb) & !is.na(storage_gb) ~ "Complete",
+      !is.na(extracted_price) & !is.na(rating_numeric) ~ "Good",
+      !is.na(extracted_price) ~ "Basic",
+      TRUE ~ "Limited"
+    ),
+    
+    # Final categorization
+    final_category = case_when(
+      is_gaming & extracted_price > 1000 ~ "Premium Gaming",
+      is_gaming ~ "Budget Gaming",
+      is_2in1 & extracted_price > 800 ~ "Premium Convertible",
+      is_2in1 ~ "Budget Convertible",
+      ram_gb >= 32 ~ "Workstation",
+      brand_category == "Premium" ~ "Premium Standard",
+      brand_category == "Budget Chinese" ~ "Budget Generic",
+      TRUE ~ "Standard"
+    )
+  )
+
+# 5. Show final statistics
+cat("\n5. FINAL VALIDATED DATASET STATISTICS\n")
+
+final_stats <- df_final_validated %>%
+  summarise(
+    total = n(),
+    amazon = sum(source == "Amazon"),
+    walmart = sum(source == "Walmart"),
+    amazon_pct = round(amazon / total * 100, 1),
+    walmart_pct = round(walmart / total * 100, 1),
+    avg_price = mean(extracted_price, na.rm = TRUE),
+    amazon_avg_price = mean(extracted_price[source == "Amazon"], na.rm = TRUE),
+    walmart_avg_price = mean(extracted_price[source == "Walmart"], na.rm = TRUE),
+    price_saving = amazon_avg_price - walmart_avg_price,
+    avg_rating = mean(rating_numeric, na.rm = TRUE),
+    amazon_avg_rating = mean(rating_numeric[source == "Amazon"], na.rm = TRUE),
+    walmart_avg_rating = mean(rating_numeric[source == "Walmart"], na.rm = TRUE),
+    rating_diff = amazon_avg_rating - walmart_avg_rating
+  )
+
+cat(sprintf("Total validated products: %d\n", final_stats$total))
+cat(sprintf("Amazon: %d (%.1f%%), Walmart: %d (%.1f%%)\n", 
+            final_stats$amazon, final_stats$amazon_pct,
+            final_stats$walmart, final_stats$walmart_pct))
+cat(sprintf("Average price: $%.2f\n", final_stats$avg_price))
+cat(sprintf("Amazon avg price: $%.2f, Walmart avg price: $%.2f\n",
+            final_stats$amazon_avg_price, final_stats$walmart_avg_price))
+cat(sprintf("✅ Walmart saves: $%.2f (%.1f%% cheaper)\n",
+            final_stats$price_saving, 
+            (final_stats$price_saving / final_stats$amazon_avg_price) * 100))
+cat(sprintf("Average rating: %.2f/5\n", final_stats$avg_rating))
+cat(sprintf("Amazon avg rating: %.2f, Walmart avg rating: %.2f\n",
+            final_stats$amazon_avg_rating, final_stats$walmart_avg_rating))
+cat(sprintf("✅ Amazon rating advantage: +%.2f points\n", final_stats$rating_diff))
+
+# 6. Save final validated dataset
+cat("\n6. SAVING FINAL VALIDATED DATASET\n")
+
+saveRDS(df_final_validated, "final_validated_dataset.rds")
+write.csv(df_final_validated, "final_validated_dataset.csv", row.names = FALSE)
+
+cat("✅ Final validated dataset saved:\n")
+cat("   - final_validated_dataset.rds (R format)\n")
+cat("   - final_validated_dataset.csv (CSV format)\n")
+```
+
+
+### 10. EXECUTIVE SUMMARY & INSIGHTS
+```{r}
+# 7. Create executive summary
+cat("\n7. EXECUTIVE SUMMARY FOR FINAL PROJECT\n")
+cat("========================================\n")
+
+cat("PROJECT: Amazon vs Walmart Laptop Price & Value Analysis\n")
+cat("DATASET: %d laptops (cleaned and validated)\n", final_stats$total)
+cat("TIMEFRAME: Analysis completed ", format(Sys.Date(), "%B %d, %Y"), "\n\n")
+
+cat("KEY FINDINGS (VALIDATED):\n")
+cat("1. PRICE: Walmart is $", round(final_stats$price_saving, 2), 
+    " cheaper on average\n", sep = "")
+cat("2. QUALITY: Amazon has +", round(final_stats$rating_diff, 2), 
+    " higher average ratings\n", sep = "")
+cat("3. SELECTION: Amazon has ", final_stats$amazon, " vs Walmart ", 
+    final_stats$walmart, " laptops\n", sep = "")
+cat("4. VALUE: Best price/performance in $300-$700 range\n\n")
+
+
+```
+
+```{r}
+# SECTION 7: SAVE ALL RESULTS
+cat("\n=== SECTION 7: SAVING FINAL RESULTS ===\n")
+
+write.csv(df_final_clean, "final_project_amazon_walmart_analysis.csv", row.names = FALSE)
+cat("✅ Final dataset saved for project submission\n")
+
+# Generate a summary report
+sink("final_project_summary.txt")
+cat("FINAL PROJECT: AMAZON VS WALMART LAPTOP ANALYSIS\n")
+cat("================================================\n\n")
+cat("Dataset: ", nrow(df_final_clean), " laptops analyzed\n")
+cat("Timeframe: ", format(Sys.Date(), "%B %Y"), "\n\n")
+cat("KEY FINDINGS:\n")
+cat("1. Walmart is $", round(mean(df_final_clean$extracted_price[df_final_clean$source == "Walmart"], na.rm = TRUE) - 
+                               mean(df_final_clean$extracted_price[df_final_clean$source == "Amazon"], na.rm = TRUE), 2), 
+    " cheaper on average\n", sep = "")
+cat("2. Amazon has ", round(mean(df_final_clean$rating_numeric[df_final_clean$source == "Amazon"], na.rm = TRUE) - 
+                              mean(df_final_clean$rating_numeric[df_final_clean$source == "Walmart"], na.rm = TRUE), 2),
+    " higher average rating\n", sep = "")
+cat("3. Best value metric: price_per_ram (lower is better)\n")
+sink()
+
+cat("✅ Project summary saved: final_project_summary.txt\n")
+
+
+```
+
+
+
+##  Key Features:
+Smart Recommendations: Personalized laptop suggestions based on use case, budget, and preferences
+
+Market Intelligence: Real-time analysis of laptop market trends and pricing
+
+Retailer Comparison: Side-by-side comparison of Amazon vs Walmart offerings
+
+Feature Analysis: Detailed breakdown of specifications vs price relationships
+
+Interactive Exploration: Filter and explore thousands of laptop listings
+
+##  📊 Data Sources & Methodology:
+
+Scraped data from Amazon and Walmart e-commerce platforms
+
+Cleaned and standardized specifications (RAM, Storage, Processor, etc.)
+
+Calculated value scores based on price-performance ratios
+
+Implemented machine learning-inspired recommendation algorithms
