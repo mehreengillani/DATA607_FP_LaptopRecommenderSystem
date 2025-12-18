@@ -1,1 +1,1 @@
-# DATA607_FP_LaptopRecommendatorSystem
+# DATA607_FP_LaptopRecommenderSystem
